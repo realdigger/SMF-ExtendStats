@@ -1,0 +1,327 @@
+<?xml version="1.0"?>
+<!DOCTYPE modification SYSTEM "http://www.simplemachines.org/xml/modification">
+<!-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+	This is an example modification file for SMF packages.
+
+	ATTENTION: If you are trying to install this manually, you should try
+	the package manager.  If it will not work for you, please take a look
+	at the following for information on this format:
+		http://mods.simplemachines.org/docs/manual-install.php
+
+================================================================================
+
+	Modification files can be used to modify files so that they do what
+	your package needs them to do to work properly.
+
+ - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -->
+
+<modification xmlns="http://www.simplemachines.org/xml/modification" xmlns:smf="http://www.simplemachines.org/">
+
+	<id>digger:ExtendStats</id>
+	<version>1.2</version>
+
+	<file name="$sourcedir/Subs.php">
+
+		<operation>
+
+			<search position="after"><![CDATA[// Update some basic statistics...]]></search>
+
+			<add><![CDATA[ 
+// * ExtendStats mod by Digger
+
+function dateExtendStats()
+{
+  $start = array();
+  
+  // Get some dates 
+  $mydate = getdate();
+  if ($mydate['wday']==0) $mydate['wday'] = 7; // Fix for Sunday 0 => 7
+  $start['Year'] = mktime(0, 0, 0, 1, 1, $mydate['year']); // Get first day of year
+  $start['Month'] = mktime(0, 0, 0, $mydate['mon'], 1, $mydate['year']); // Get first day of month 
+  $start['Week'] = mktime(0, 0, 0, $mydate['mon'], $mydate['mday']-$mydate['wday']+1, $mydate['year']); // Get first day of week
+  $start['Today'] = mktime(0, 0, 0, $mydate['mon'], $mydate['mday'], $mydate['year']); // Get first time of day
+  
+  return $start;
+}
+
+function memberExtendStats($member)
+{
+  global $db_prefix, $context;
+  
+  if (empty($member)) return false;
+  $context['member']['ExtendStats'] = '';
+  $start = array();
+  
+  // Get some dates 
+  $start = dateExtendStats ();
+    
+  $result = db_query("
+	SELECT *
+	FROM {$db_prefix}members_stats  
+	WHERE 
+	ID_MEMBER = $member AND
+  ID_MEMBER != 0
+  LIMIT 1", 
+  __FILE__, __LINE__);
+	
+	$row = mysql_fetch_assoc($result);
+  
+  if (!empty($row))
+  {
+    // Make some check for unactive users 
+    if ($row['postsUpdated']<$start['Year']) $row['postsYear'] = 0;
+    if ($row['postsUpdated']<$start['Month']) $row['postsMonth'] = 0; 
+    if ($row['postsUpdated']<$start['Week']) $row['postsWeek'] = 0;
+    if ($row['postsUpdated']<$start['Today']) $row['postsToday'] = 0;
+    //
+	  $context['member']['ExtendStats'] = $row;
+  }
+  mysql_free_result($result);
+}
+
+function topExtendStats($period, $top = 3)
+{
+  global $db_prefix, $context;
+  
+  if (empty($period)) return false;
+  $where_date = '';
+  $start = array();
+  $context['ExtendStats']['top'][$period]='';
+  
+  if ($period!='All')
+  {
+    // Get some dates 
+    $start = dateExtendStats ();
+  
+    $where_date = " postsUpdated > " . $start[$period] . " AND";
+  
+    $result = db_query("
+	  SELECT ID_MEMBER, posterName, posts". $period . " AS posts
+	  FROM {$db_prefix}members_stats  
+	  WHERE 
+	  $where_date
+	  ID_MEMBER != 0
+    ORDER BY posts" . $period . " DESC, postsUpdated
+    LIMIT $top", 
+    __FILE__, __LINE__);
+  }
+  else
+  {
+    $result = db_query("
+	  SELECT ID_MEMBER, memberName AS posterName, posts
+	  FROM {$db_prefix}members  
+	  WHERE 
+	  ID_MEMBER != 0
+    ORDER BY posts DESC
+    LIMIT $top", 
+    __FILE__, __LINE__);
+  }
+	  
+    while ($row = mysql_fetch_assoc($result))
+    {
+      if (!empty($row)) ($row['posts']) ? $context['ExtendStats']['top'][$period].="<a href='?action=profile;u=" . $row['ID_MEMBER'] . "'>" . $row['posterName'] . '</a>(' . $row['posts'] . '), ' : '';
+    }
+    if (substr($context['ExtendStats']['top'][$period], -2)==', ') $context['ExtendStats']['top'][$period] = substr($context['ExtendStats']['top'][$period], 0, -2);// Delete trailing ','
+    mysql_free_result($result);  
+}
+
+function updateExtendStats($members = null)
+{  
+  global $db_prefix;
+  
+  $where_date = '';
+  $where_member = '';
+  $start = array();
+  if (!is_array($members)) $members = array($members);  
+  
+  // Get some dates 
+  $now = time();
+  $start = dateExtendStats ();
+  
+  foreach ($members as $memberID)
+  { 
+    foreach ($start as $key_date => $where_date)
+    {
+      $where_date = " m.posterTime > $where_date AND ";
+      if (!empty($memberID)) $where_member = " m.ID_MEMBER = $memberID AND "; else $where_member='';
+  
+      // Fix for users with 0 messages from period
+      db_query("
+			UPDATE {$db_prefix}members_stats m
+			SET m.posts". $key_date . " = 0 
+			WHERE $where_member
+			m.ID_MEMBER != 0",
+      __FILE__, __LINE__);
+  
+      $result = db_query("
+		  SELECT m.ID_MEMBER, m.posterName, COUNT(m.ID_MSG) AS posts
+		  FROM ({$db_prefix}messages AS m, {$db_prefix}boards AS b) 
+		  WHERE 
+		  $where_member
+		  m.ID_MEMBER != 0 AND
+      $where_date
+		  m.ID_BOARD = b.ID_BOARD AND
+      b.countPosts = 0
+		  GROUP BY m.ID_MEMBER", __FILE__, __LINE__);
+		
+	    while ($row = mysql_fetch_assoc($result))
+	    {
+		    db_query("
+			  INSERT INTO {$db_prefix}members_stats
+			  SET ID_MEMBER = $row[ID_MEMBER], 
+        posterName = '" . $row['posterName'] . "',
+        posts". $key_date . " = " . (int) $row['posts'] . ",
+        postsUpdated = $now
+			  ON DUPLICATE KEY UPDATE posterName = '" . $row['posterName'] . "',
+        posts". $key_date . " = " . (int) $row['posts'] . ",
+        postsUpdated = $now ",
+        __FILE__, __LINE__);
+	    }
+      mysql_free_result($result);
+	  }
+  }
+}
+// ExtendStats mod by Digger *
+
+]]></add>
+
+    </operation>
+
+		<operation>
+
+			<search position="before"><![CDATA[updateStats('postgroups', $condition, array_keys($data));]]></search>
+
+			<add><![CDATA[ 
+	// * ExtendStats mod by Digger
+	if (isset($data['posts'])) updateExtendStats($members);
+	// ExtendStats mod by Digger *
+]]></add>
+
+    </operation>
+
+  </file>  
+
+	<file name="$sourcedir/Admin.php">
+
+		<operation>
+
+			<search position="before"><![CDATA[updateStats('topic');]]></search>
+
+			<add><![CDATA[ 
+  // * ExtendStats mod by Digger
+  updateExtendStats();
+  // ExtendStats mod by Digger *
+]]></add>
+
+    </operation>
+
+  </file>
+  
+  <file name="$sourcedir/RemoveTopic.php">
+
+		<operation>
+
+			<search position="before"><![CDATA[removeTopics($row['ID_TOPIC']);]]></search>
+
+			<add><![CDATA[ 
+	  // * ExtendStats mod by Digger
+	  if (!empty($row['ID_MEMBER_POSTER'])) updateExtendStats($row['ID_MEMBER_POSTER']);
+	  // ExtendStats mod by Digger *
+]]></add>
+
+    </operation>
+    
+    <operation>
+
+			<search position="after"><![CDATA[// And now to update the last message of each board we messed with.]]></search>
+
+			<add><![CDATA[ 
+	// * ExtendStats mod by Digger
+	if (!empty($row['ID_MEMBER']) && $decreasePostCount) updateExtendStats($row['ID_MEMBER']);
+	// ExtendStats mod by Digger *
+	
+]]></add>
+
+    </operation>
+
+  </file>
+  
+	<file name="$themedir/Profile.template.php">
+
+		<operation>
+
+			<search position="before"><![CDATA[<td>', $context['member']['posts'], ' (', $context['member']['posts_per_day'], ' ', $txt['posts_per_day'], ')</td>
+				</tr><tr>]]></search>
+
+			<add><![CDATA[ 
+	
+  '; /* ExtendStats mod by Digger */
+	memberExtendStats($context['member']['id']);
+  if (!empty($context['member']['ExtendStats']['postsYear']))
+  echo '		
+					<td>&nbsp</td>
+					<td>', $txt['calendar11'] , ' ', $context['member']['ExtendStats']['postsToday'] , ', ',
+                 $txt['calendar51'] , ': ' , $context['member']['ExtendStats']['postsWeek'] , ', ' ,
+                 $txt['calendar9'] , ' ', $context['member']['ExtendStats']['postsMonth'] , ', ' ,
+                 $txt['calendar10'] , ' ', $context['member']['ExtendStats']['postsYear'] , 
+          '</td>
+        </tr><tr>';
+	/* ExtendStats mod by Digger */ echo '
+]]></add>
+
+		</operation>
+
+  </file>
+  
+  <file name="$themedir/index.template.php">
+
+		<operation>
+
+			<search position="replace"><![CDATA[<td colspan="2" width="100%" valign="top" class="windowbg2"><span class="middletext">';]]></search>
+
+			<add><![CDATA[<td width="50%" valign="top" class="windowbg2"><span class="middletext">';
+                    //ExtendStats mod by Digger]]></add>
+
+		</operation>
+		
+		<operation>
+
+			<search position="replace"><![CDATA[echo '
+							</td>
+						</tr>
+					</table>
+				</td>
+			</tr>
+		</table>';]]></search>
+
+			<add><![CDATA[
+			
+//* ExtendStats mod by Digger
+topExtendStats('Today', 3);
+topExtendStats('Week', 3);
+topExtendStats('Month', 3);
+topExtendStats('Year', 3);
+topExtendStats('All', 3);
+	echo '
+              </td>
+              <td width="50%" valign="top" class="windowbg2"><span class="middletext">',
+							  '<strong>' , $txt['calendar11'], '</strong>' , ' ', $context['ExtendStats']['top']['Today'], '<br />',
+							  '<strong>' , $txt['calendar51'], ': ', '</strong>' , $context['ExtendStats']['top']['Week'], '<br />',
+							  '<strong>' , $txt['calendar9'], '</strong>' , ' ', $context['ExtendStats']['top']['Month'], '<br />',
+							  '<strong>' , $txt['calendar10'], '</strong>' , ' ', $context['ExtendStats']['top']['Year'], '<br />',
+							  '<strong>' , $txt[94], ': ', '</strong>' , ' ', $context['ExtendStats']['top']['All'],
+                '</span>
+              </td>
+						</tr>
+					</table>
+				</td>
+			</tr>
+		</table>';
+// * ExtendStats mod by Digger
+]]></add>
+
+		</operation>
+
+  </file>
+  
+</modification>
